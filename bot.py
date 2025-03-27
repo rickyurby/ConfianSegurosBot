@@ -1,7 +1,7 @@
 import os
 import logging
 import requests
-import backoff  # 🔹 Para reintentar en caso de error de conexión
+import backoff  # Para reintentar en caso de error de conexión
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from PyPDF2 import PdfReader
@@ -49,7 +49,7 @@ async def start(update: Update, context):
 def obtener_lista_pdfs():
     """Devuelve una lista de archivos PDF disponibles."""
     try:
-        response = requests.get(urljoin(PDF_BASE_URL, 'listado.txt'), timeout=40)
+        response = requests.get(urljoin(PDF_BASE_URL, 'listado.txt'), timeout=10)
         response.raise_for_status()
         return response.text.strip().split('\n')
     except Exception as e:
@@ -59,23 +59,10 @@ def obtener_lista_pdfs():
 @backoff.on_exception(backoff.expo, requests.exceptions.RequestException, max_tries=3)
 def descargar_pdf(pdf_url):
     """Descarga un PDF con reintentos en caso de fallos de conexión."""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
-
-    try:
-        logger.info(f"📥 Descargando PDF: {pdf_url}")
-        response = requests.get(pdf_url, headers=headers, timeout=60, verify=False)  # 🔹 Desactiva SSL temporalmente
-        response.raise_for_status()
-        return response.content
-    except requests.exceptions.SSLError as ssl_err:
-        logger.error(f"❌ Error SSL al descargar {pdf_url}: {ssl_err}")
-    except requests.exceptions.Timeout:
-        logger.error(f"❌ Timeout al descargar el PDF: {pdf_url}")
-    except requests.exceptions.RequestException as e:
-        logger.error(f"❌ Error en la descarga del PDF: {e}")
-
-    return None
+    logger.info(f"📥 Descargando PDF: {pdf_url}")
+    response = requests.get(pdf_url, timeout=60)  # 🔹 Timeout aumentado a 60 seg
+    response.raise_for_status()
+    return response.content
 
 def procesar_pdf(pdf_url):
     """Descarga y extrae texto de un PDF."""
@@ -151,10 +138,14 @@ async def handle_message(update: Update, context):
 def main():
     """Inicia el bot."""
     application = Application.builder().token(TELEGRAM_TOKEN).build()
+    
+    # Agregar manejadores para los comandos y mensajes
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     logger.info("🚀 Bot iniciado correctamente")
+    
+    # Iniciar el bot con `run_polling()` para obtener actualizaciones
     application.run_polling()
 
 if __name__ == '__main__':
