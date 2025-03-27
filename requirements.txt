@@ -1,7 +1,7 @@
 python-telegram-bot==20.3
-openai==1.10.0  # Última versión estable compatible
-langchain-openai==0.0.7  # Versión compatible con openai>=1.0.0
+openai==1.12.0
+langchain==0.1.26
+langchain-openai==0.0.7
 PyPDF2==3.0.1
 requests==2.31.0
-python-dotenv==1.0.0
-langchain-core==0.1.9  # Versión actualizada para evitar conflictos
+python-dotenv==1.0.1
