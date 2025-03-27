@@ -1,6 +1,7 @@
 import os
 import logging
 import requests
+import tempfile
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from PyPDF2 import PdfReader
@@ -48,7 +49,7 @@ async def start(update: Update, context):
 def obtener_lista_pdfs():
     """Devuelve una lista de archivos PDF disponibles."""
     try:
-        response = requests.get(urljoin(PDF_BASE_URL, 'listado.txt'))
+        response = requests.get(urljoin(PDF_BASE_URL, 'listado.txt'), timeout=30)
         response.raise_for_status()
         return response.text.strip().split('\n')
     except Exception as e:
@@ -56,16 +57,22 @@ def obtener_lista_pdfs():
         return []
 
 def procesar_pdf(pdf_url):
-    """Descarga y extrae texto de un PDF."""
+    """Descarga y extrae texto de un PDF utilizando un timeout de 120 segundos."""
     try:
-        response = requests.get(pdf_url, timeout=15)
+        response = requests.get(pdf_url, timeout=120)
         response.raise_for_status()
         
-        with open('temp.pdf', 'wb') as f:
-            f.write(response.content)
+        # Uso de un archivo temporal para manejar el PDF
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+            tmp_file.write(response.content)
+            temp_path = tmp_file.name
         
-        reader = PdfReader('temp.pdf')
+        reader = PdfReader(temp_path)
+        # Extraer texto de cada página, omitiendo aquellas que no contengan texto
         text = "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
+        
+        # Eliminar el archivo temporal
+        os.remove(temp_path)
         return text
     except Exception as e:
         logger.error(f"Error procesando PDF {pdf_url}: {str(e)}")
@@ -112,6 +119,7 @@ async def handle_message(update: Update, context):
         return
     
     respuesta = await generar_respuesta(pregunta, "\n\n".join(textos_pdfs))
+    # Telegram tiene un límite de 4096 caracteres por mensaje
     await update.message.reply_text(respuesta[:4000])
 
 def main():
