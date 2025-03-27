@@ -1,6 +1,6 @@
 python-telegram-bot==20.3
 openai==1.12.0
-langchain==0.3.21
+langchain
 langchain-openai==0.0.7
 PyPDF2==3.0.1
 requests==2.31.0
