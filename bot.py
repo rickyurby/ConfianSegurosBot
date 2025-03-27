@@ -129,7 +129,13 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     logger.info("Bot iniciado correctamente")
-    application.run_polling()
+
+    # Configuración del puerto para el despliegue en Render
+    port = os.getenv('PORT', 8080)  # Asegúrate de que tu aplicación escuche el puerto correcto
+    logger.info(f"Escuchando en el puerto: {port}")
+
+    # Ejecutar el bot
+    application.run_polling(port=port)
 
 if __name__ == '__main__':
     main()
