@@ -4,13 +4,17 @@ import requests
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from PyPDF2 import PdfReader
-import openai
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
 from urllib.parse import urljoin
 from dotenv import load_dotenv
 
 # Configuración inicial
 load_dotenv()
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
 # Variables de entorno
@@ -21,11 +25,18 @@ PDF_BASE_URL = "https://confianseguros.com/docs/"
 # Cache para PDFs
 pdf_cache = {}
 
+# Configuración de LangChain
+llm = ChatOpenAI(
+    model="gpt-3.5-turbo",
+    temperature=0.3,
+    api_key=OPENAI_API_KEY
+)
+
 async def start(update: Update, context):
     """Manejador del comando /start"""
     welcome_msg = (
         "👋 ¡Hola! Soy ConfianSegurosBot.\n\n"
-        "Puedo responderte preguntas sobre las condiciones generales de los contratos de seguros.\n\n"
+        "Puedo responderte preguntas sobre las condiciones generales de contratos de seguros.\n\n"
         "Ejemplos de preguntas:\n"
         "- ¿Qué cubre el seguro de auto en caso de accidente?\n"
         "- ¿Cuál es el período de espera del seguro de salud?\n"
@@ -35,12 +46,12 @@ async def start(update: Update, context):
     await update.message.reply_text(welcome_msg)
 
 def get_pdf_list():
-    """Obtiene la lista de PDFs disponibles (deberías actualizar esta función según tus necesidades)"""
+    """Lista de PDFs disponibles (actualiza con tus archivos)"""
     return [
         "CG-AX-CAM-IND-D22.pdf",
         "CG-AX-GMM-IND-F24.pdf",
         "CG-AXA-AUT-IND-AG24.pdf",
-        # Añade aquí nuevos PDFs cuando los subas
+        # Añade más archivos según necesites
     ]
 
 def process_pdf_text(pdf_url):
@@ -59,6 +70,23 @@ def process_pdf_text(pdf_url):
         logger.error(f"Error procesando PDF {pdf_url}: {str(e)}")
         return None
 
+async def generate_response(query, context):
+    """Genera respuesta usando LangChain"""
+    prompt = ChatPromptTemplate.from_template(
+        "Eres un experto en seguros. Responde basándote en este contexto:\n\n"
+        "{context}\n\n"
+        "Pregunta: {query}\n\n"
+        "Instrucciones:\n"
+        "- Responde en español de forma clara y profesional\n"
+        "- Si la información no está en el contexto, dilo\n"
+        "- Usa viñetas para listar coberturas/exclusiones\n"
+        "- Destaca plazos y límites importantes"
+    )
+    
+    chain = prompt | llm
+    response = await chain.ainvoke({"context": context, "query": query})
+    return response.content
+
 async def handle_message(update: Update, context):
     """Maneja los mensajes del usuario"""
     user_query = update.message.text
@@ -68,7 +96,7 @@ async def handle_message(update: Update, context):
     await update.message.reply_chat_action(action="typing")
     
     try:
-        # 1. Obtener texto relevante de los PDFs
+        # 1. Obtener texto de los PDFs relevantes
         pdf_texts = []
         for pdf_file in get_pdf_list():
             pdf_url = urljoin(PDF_BASE_URL, pdf_file)
@@ -82,49 +110,18 @@ async def handle_message(update: Update, context):
                 pdf_texts.append(f"=== {pdf_file} ===\n{pdf_cache[pdf_url]}")
         
         if not pdf_texts:
-            await update.message.reply_text("⚠️ No pude acceder a los documentos en este momento. Por favor, inténtalo más tarde.")
+            await update.message.reply_text("⚠️ No pude acceder a los documentos. Intenta más tarde.")
             return
         
         full_context = "\n\n".join(pdf_texts)
         
-        # 2. Generar respuesta con OpenAI
-        response = await generate_ai_response(user_query, full_context)
+        # 2. Generar respuesta
+        response = await generate_response(user_query, full_context)
         await update.message.reply_text(response)
         
     except Exception as e:
         logger.error(f"Error: {str(e)}")
-        await update.message.reply_text("❌ Ocurrió un error al procesar tu consulta. Por favor, inténtalo de nuevo.")
-
-async def generate_ai_response(query, context):
-    """Genera respuesta usando OpenAI"""
-    try:
-        prompt = (
-            "Eres un experto en seguros que responde consultas basado en documentos oficiales. "
-            "Responde de manera clara, precisa y profesional.\n\n"
-            f"Documentos de referencia:\n{context}\n\n"
-            f"Pregunta del cliente: {query}\n\n"
-            "Instrucciones:\n"
-            "- Responde en español\n"
-            "- Sé conciso pero completo\n"
-            "- Si la información no está en los documentos, dilo claramente\n"
-            "- Usa viñetas para listar elementos cuando sea apropiado\n"
-            "- Destaca números y fechas importantes\n"
-        )
-        
-        response = await openai.ChatCompletion.acreate(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "Eres un asistente experto en seguros."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.3,
-            max_tokens=500
-        )
-        
-        return response.choices[0].message['content']
-    except Exception as e:
-        logger.error(f"Error en OpenAI: {str(e)}")
-        return "No pude generar una respuesta en este momento. Por favor, inténtalo más tarde."
+        await update.message.reply_text("❌ Error al procesar tu consulta. Intenta nuevamente.")
 
 def main():
     """Inicia el bot"""
