@@ -1,6 +1,7 @@
 import os
 import logging
 import requests
+from io import BytesIO
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from PyPDF2 import PdfReader
@@ -30,7 +31,7 @@ if OPENAI_API_KEY:
     llm = ChatOpenAI(
         model="gpt-3.5-turbo",
         temperature=0.3,
-        api_key=OPENAI_API_KEY
+        openai_api_key=OPENAI_API_KEY  # Corregido
     )
 else:
     logger.error("OPENAI_API_KEY no está configurada")
@@ -58,15 +59,12 @@ def get_pdf_list():
     ]
 
 def process_pdf_text(pdf_url):
-    """Descarga y extrae texto de un PDF"""
+    """Descarga y extrae texto de un PDF sin escribir en disco"""
     try:
-        response = requests.get(pdf_url, timeout=15)  # Aumentado timeout
+        response = requests.get(pdf_url, timeout=15)
         response.raise_for_status()
-        
-        with open('temp.pdf', 'wb') as f:
-            f.write(response.content)
-        
-        reader = PdfReader('temp.pdf')
+
+        reader = PdfReader(BytesIO(response.content))
         text = "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
         return text
     except Exception as e:
@@ -85,10 +83,16 @@ async def generate_response(query, context):
         
         chain = prompt | llm
         response = await chain.ainvoke({"context": context, "query": query})
-        return response.content
+        
+        return response.content if hasattr(response, "content") else "❌ No pude generar una respuesta."
     except Exception as e:
         logger.error(f"Error en generate_response: {str(e)}")
         return "❌ Error al generar respuesta. Por favor, intenta nuevamente."
+
+async def send_long_message(update, text):
+    """Envía mensajes largos en fragmentos de hasta 4000 caracteres"""
+    for i in range(0, len(text), 4000):
+        await update.message.reply_text(text[i:i+4000])
 
 async def handle_message(update: Update, context):
     """Maneja los mensajes del usuario"""
@@ -111,14 +115,14 @@ async def handle_message(update: Update, context):
             
             if pdf_url in pdf_cache:
                 pdf_texts.append(f"=== {pdf_file} ===\n{pdf_cache[pdf_url]}")
-        
+
         if not pdf_texts:
             await update.message.reply_text("⚠️ No pude acceder a los documentos. Intenta más tarde.")
             return
         
         # 2. Generar y enviar respuesta
         response = await generate_response(user_query, "\n\n".join(pdf_texts))
-        await update.message.reply_text(response[:4000])  # Limite de Telegram
+        await send_long_message(update, response)
         
     except Exception as e:
         logger.error(f"Error en handle_message: {str(e)}")
