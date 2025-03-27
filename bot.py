@@ -59,10 +59,23 @@ def obtener_lista_pdfs():
 @backoff.on_exception(backoff.expo, requests.exceptions.RequestException, max_tries=3)
 def descargar_pdf(pdf_url):
     """Descarga un PDF con reintentos en caso de fallos de conexión."""
-    logger.info(f"📥 Descargando PDF: {pdf_url}")
-    response = requests.get(pdf_url, timeout=60)  # 🔹 Timeout aumentado a 60 seg
-    response.raise_for_status()
-    return response.content
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+
+    try:
+        logger.info(f"📥 Descargando PDF: {pdf_url}")
+        response = requests.get(pdf_url, headers=headers, timeout=60, verify=False)  # 🔹 Desactiva SSL temporalmente
+        response.raise_for_status()
+        return response.content
+    except requests.exceptions.SSLError as ssl_err:
+        logger.error(f"❌ Error SSL al descargar {pdf_url}: {ssl_err}")
+    except requests.exceptions.Timeout:
+        logger.error(f"❌ Timeout al descargar el PDF: {pdf_url}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"❌ Error en la descarga del PDF: {e}")
+
+    return None
 
 def procesar_pdf(pdf_url):
     """Descarga y extrae texto de un PDF."""
