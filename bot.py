@@ -1,7 +1,7 @@
 import os
 import logging
 import requests
-from io import BytesIO
+import backoff  # 🔹 Para reintentar en caso de error de conexión
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from PyPDF2 import PdfReader
@@ -10,135 +10,138 @@ from langchain_core.prompts import ChatPromptTemplate
 from urllib.parse import urljoin
 from dotenv import load_dotenv
 
-# Configuración inicial
+# Cargar variables de entorno
 load_dotenv()
+
+# Configuración de logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Variables de entorno
+# Obtener credenciales de entorno
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-PDF_BASE_URL = "https://confianseguros.com/docs/"
+PDF_BASE_URL = os.getenv('PDF_BASE_URL')
 
-# Cache para PDFs
-pdf_cache = {}
-
-# Configura LangChain solo si hay API key
-if OPENAI_API_KEY:
-    llm = ChatOpenAI(
-        model="gpt-3.5-turbo",
-        temperature=0.3,
-        openai_api_key=OPENAI_API_KEY  # Corregido
-    )
-else:
-    logger.error("OPENAI_API_KEY no está configurada")
+# Validación de credenciales
+if not TELEGRAM_TOKEN or not OPENAI_API_KEY or not PDF_BASE_URL:
+    logger.error("❌ Faltan credenciales en .env")
     exit(1)
 
+# Inicializar OpenAI
+llm = ChatOpenAI(
+    model="gpt-3.5-turbo",
+    temperature=0.3,
+    api_key=OPENAI_API_KEY
+)
+
 async def start(update: Update, context):
-    """Manejador del comando /start"""
+    """Mensaje de bienvenida"""
     welcome_msg = (
         "👋 ¡Hola! Soy ConfianSegurosBot.\n\n"
-        "Puedo responderte preguntas sobre las condiciones generales de contratos de seguros.\n\n"
-        "Ejemplos de preguntas:\n"
-        "- ¿Qué cubre el seguro de auto en caso de accidente?\n"
-        "- ¿Cuál es el período de espera del seguro de salud?\n"
-        "- ¿Qué exclusiones tiene el seguro de hogar?\n\n"
-        "¡Pregúntame lo que necesites saber!"
+        "Puedo responder preguntas sobre pólizas de seguros basándome en documentos oficiales.\n"
+        "Pregúntame lo que necesites."
     )
     await update.message.reply_text(welcome_msg)
 
-def get_pdf_list():
-    """Lista de PDFs disponibles"""
-    return [
-        "CG-AX-CAM-IND-D22.pdf",
-        "CG-AX-GMM-IND-F24.pdf",
-        "CG-AXA-AUT-IND-AG24.pdf",
-    ]
-
-def process_pdf_text(pdf_url):
-    """Descarga y extrae texto de un PDF sin escribir en disco"""
+def obtener_lista_pdfs():
+    """Devuelve una lista de archivos PDF disponibles."""
     try:
-        response = requests.get(pdf_url, timeout=15)
+        response = requests.get(urljoin(PDF_BASE_URL, 'listado.txt'), timeout=10)
         response.raise_for_status()
-
-        reader = PdfReader(BytesIO(response.content))
-        text = "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
-        return text
+        return response.text.strip().split('\n')
     except Exception as e:
-        logger.error(f"Error procesando PDF {pdf_url}: {str(e)}")
-        return None
+        logger.error(f"⚠️ Error obteniendo lista de PDFs: {e}")
+        return []
 
-async def generate_response(query, context):
-    """Genera respuesta usando LangChain"""
+@backoff.on_exception(backoff.expo, requests.exceptions.RequestException, max_tries=3)
+def descargar_pdf(pdf_url):
+    """Descarga un PDF con reintentos en caso de fallos de conexión."""
+    logger.info(f"📥 Descargando PDF: {pdf_url}")
+    response = requests.get(pdf_url, timeout=60)  # 🔹 Timeout aumentado a 60 seg
+    response.raise_for_status()
+    return response.content
+
+def procesar_pdf(pdf_url):
+    """Descarga y extrae texto de un PDF."""
+    try:
+        pdf_data = descargar_pdf(pdf_url)
+        
+        if not pdf_data:
+            logger.warning(f"⚠️ El PDF está vacío: {pdf_url}")
+            return ""
+
+        with open('temp.pdf', 'wb') as f:
+            f.write(pdf_data)
+
+        reader = PdfReader('temp.pdf')
+        text = "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
+        
+        if not text.strip():
+            logger.warning(f"⚠️ No se pudo extraer texto del PDF: {pdf_url}")
+            return ""
+        
+        return text
+    except requests.exceptions.Timeout:
+        logger.error(f"❌ Timeout al descargar el PDF: {pdf_url}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"❌ Error en la descarga del PDF: {e}")
+    except Exception as e:
+        logger.error(f"❌ Error procesando PDF {pdf_url}: {str(e)}")
+    return ""
+
+async def generar_respuesta(pregunta, contexto):
+    """Genera una respuesta con LangChain."""
     try:
         prompt = ChatPromptTemplate.from_template(
-            "Eres un experto en seguros. Contexto:\n{context}\n\n"
+            "Eres un asistente experto en seguros. Basado en el siguiente contexto:\n{context}\n\n"
             "Pregunta: {query}\n\n"
-            "Responde en español de forma clara y profesional. "
-            "Si la información no está en el contexto, dilo claramente."
+            "Responde en español de manera clara y precisa. Si no tienes información relevante, dilo claramente."
         )
         
         chain = prompt | llm
-        response = await chain.ainvoke({"context": context, "query": query})
-        
-        return response.content if hasattr(response, "content") else "❌ No pude generar una respuesta."
+        response = await chain.ainvoke({"context": contexto, "query": pregunta})
+        return response.content
     except Exception as e:
-        logger.error(f"Error en generate_response: {str(e)}")
-        return "❌ Error al generar respuesta. Por favor, intenta nuevamente."
-
-async def send_long_message(update, text):
-    """Envía mensajes largos en fragmentos de hasta 4000 caracteres"""
-    for i in range(0, len(text), 4000):
-        await update.message.reply_text(text[i:i+4000])
+        logger.error(f"❌ Error generando respuesta: {str(e)}")
+        return "❌ No pude generar una respuesta. Intenta nuevamente."
 
 async def handle_message(update: Update, context):
-    """Maneja los mensajes del usuario"""
-    user_query = update.message.text
+    """Procesa mensajes de los usuarios."""
+    pregunta = update.message.text
     user = update.message.from_user
-    logger.info(f"Consulta de {user.first_name}: {user_query}")
+    logger.info(f"📩 Consulta de {user.first_name}: {pregunta}")
     
     await update.message.reply_chat_action(action="typing")
     
-    try:
-        # 1. Obtener texto de los PDFs
-        pdf_texts = []
-        for pdf_file in get_pdf_list():
-            pdf_url = urljoin(PDF_BASE_URL, pdf_file)
-            
-            if pdf_url not in pdf_cache:
-                text = process_pdf_text(pdf_url)
-                if text:
-                    pdf_cache[pdf_url] = text
-            
-            if pdf_url in pdf_cache:
-                pdf_texts.append(f"=== {pdf_file} ===\n{pdf_cache[pdf_url]}")
-
-        if not pdf_texts:
-            await update.message.reply_text("⚠️ No pude acceder a los documentos. Intenta más tarde.")
-            return
-        
-        # 2. Generar y enviar respuesta
-        response = await generate_response(user_query, "\n\n".join(pdf_texts))
-        await send_long_message(update, response)
-        
-    except Exception as e:
-        logger.error(f"Error en handle_message: {str(e)}")
-        await update.message.reply_text("❌ Error al procesar tu consulta. Intenta nuevamente.")
+    pdfs = obtener_lista_pdfs()
+    if not pdfs:
+        await update.message.reply_text("⚠️ No hay documentos disponibles en este momento.")
+        return
+    
+    textos_pdfs = []
+    for pdf in pdfs:
+        pdf_url = urljoin(PDF_BASE_URL, pdf)
+        texto = procesar_pdf(pdf_url)
+        if texto:
+            textos_pdfs.append(f"=== {pdf} ===\n{texto}")
+    
+    if not textos_pdfs:
+        await update.message.reply_text("⚠️ No pude extraer información de los documentos.")
+        return
+    
+    respuesta = await generar_respuesta(pregunta, "\n\n".join(textos_pdfs))
+    await update.message.reply_text(respuesta[:4000])
 
 def main():
-    """Inicia el bot"""
-    if not TELEGRAM_TOKEN:
-        logger.error("TELEGRAM_TOKEN no está configurada")
-        exit(1)
-        
+    """Inicia el bot."""
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    logger.info("Bot iniciado correctamente")
+    logger.info("🚀 Bot iniciado correctamente")
     application.run_polling()
 
 if __name__ == '__main__':
