@@ -130,12 +130,15 @@ def main():
     
     logger.info("Bot iniciado correctamente")
 
-    # Configuración del puerto para el despliegue en Render
-    port = os.getenv('PORT', 8080)  # Asegúrate de que tu aplicación escuche el puerto correcto
-    logger.info(f"Escuchando en el puerto: {port}")
+    # Configuración del webhook
+    port = os.getenv('PORT', 10000)  # Asegúrate de que tu aplicación escuche el puerto correcto
+    webhook_url = f"https://{os.getenv('RENDER_URL')}/webhook"  # Cambia según el entorno de Render
 
-    # Ejecutar el bot
-    application.run_polling(port=port)
+    # Configurar webhook
+    application.bot.set_webhook(webhook_url)
+
+    # Ejecutar el bot con webhook
+    application.run_webhook(listen="0.0.0.0", port=port, url_path='webhook', webhook_url=webhook_url)
 
 if __name__ == '__main__':
     main()
