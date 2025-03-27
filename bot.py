@@ -49,7 +49,7 @@ async def start(update: Update, context):
 def obtener_lista_pdfs():
     """Devuelve una lista de archivos PDF disponibles."""
     try:
-        response = requests.get(urljoin(PDF_BASE_URL, 'listado.txt'), timeout=10)
+        response = requests.get(urljoin(PDF_BASE_URL, 'listado.txt'), timeout=40)
         response.raise_for_status()
         return response.text.strip().split('\n')
     except Exception as e:
