@@ -1,7 +1,6 @@
 import os
 import logging
 import requests
-import backoff  # Para reintentar en caso de error de conexión
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from PyPDF2 import PdfReader
@@ -56,11 +55,10 @@ def obtener_lista_pdfs():
         logger.error(f"⚠️ Error obteniendo lista de PDFs: {e}")
         return []
 
-@backoff.on_exception(backoff.expo, requests.exceptions.RequestException, max_tries=3)
 def descargar_pdf(pdf_url):
-    """Descarga un PDF con reintentos en caso de fallos de conexión."""
+    """Descarga un PDF."""
     logger.info(f"📥 Descargando PDF: {pdf_url}")
-    response = requests.get(pdf_url, timeout=60)  # 🔹 Timeout aumentado a 60 seg
+    response = requests.get(pdf_url, timeout=60)
     response.raise_for_status()
     return response.content
 
@@ -84,10 +82,6 @@ def procesar_pdf(pdf_url):
             return ""
         
         return text
-    except requests.exceptions.Timeout:
-        logger.error(f"❌ Timeout al descargar el PDF: {pdf_url}")
-    except requests.exceptions.RequestException as e:
-        logger.error(f"❌ Error en la descarga del PDF: {e}")
     except Exception as e:
         logger.error(f"❌ Error procesando PDF {pdf_url}: {str(e)}")
     return ""
@@ -138,14 +132,10 @@ async def handle_message(update: Update, context):
 def main():
     """Inicia el bot."""
     application = Application.builder().token(TELEGRAM_TOKEN).build()
-    
-    # Agregar manejadores para los comandos y mensajes
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     logger.info("🚀 Bot iniciado correctamente")
-    
-    # Iniciar el bot con `run_polling()` para obtener actualizaciones
     application.run_polling()
 
 if __name__ == '__main__':
