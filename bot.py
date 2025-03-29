@@ -1,12 +1,14 @@
 import os
 import logging
 import requests
-import openai  # Importación faltante
+import openai
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from PyPDF2 import PdfReader
 from urllib.parse import urljoin
 from dotenv import load_dotenv
+from aiohttp import web
+import asyncio
 
 # Configuración inicial
 load_dotenv()
@@ -20,6 +22,7 @@ logger = logging.getLogger(__name__)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 PDF_BASE_URL = os.getenv("PDF_BASE_URL")
+PORT = int(os.getenv("PORT", 10000))
 
 # Configurar OpenAI
 openai.api_key = OPENAI_API_KEY
@@ -27,8 +30,34 @@ openai.api_key = OPENAI_API_KEY
 # Cache para PDFs
 pdf_cache = {}
 
+# Servidor web para health checks
+async def health_check(request):
+    return web.Response(text="OK")
+
+def setup_web_server():
+    app = web.Application()
+    app.add_routes([web.get("/health", health_check)])
+    return app
+
+async def start_bot_and_server():
+    # Configurar aplicación de Telegram
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_error_handler(error_handler)
+
+    # Configurar servidor web
+    web_app = setup_web_server()
+    runner = web.AppRunner(web_app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    
+    # Iniciar ambos servicios
+    await site.start()
+    logger.info(f"✅ Servidor health check iniciado en puerto {PORT}")
+    await application.run_polling(drop_pending_updates=True)
+
 async def start(update: Update, context):
-    """Manejador del comando /start"""
     welcome_msg = (
         "👋 ¡Hola! Soy ConfianSegurosBot.\n\n"
         "Puedo responderte preguntas sobre las condiciones generales de contratos de seguros.\n\n"
@@ -41,7 +70,6 @@ async def start(update: Update, context):
     await update.message.reply_text(welcome_msg)
 
 def get_pdf_list():
-    """Lista de PDFs disponibles"""
     return [
         "CG-AX-CAM-IND-D22.pdf",
         "CG-AX-GMM-IND-F24.pdf",
@@ -49,9 +77,9 @@ def get_pdf_list():
     ]
 
 def process_pdf_text(pdf_url: str) -> str:
-    """Descarga y extrae texto de un PDF"""
     try:
-        response = requests.get(pdf_url, timeout=15)
+        # Aumentamos el timeout a 30 segundos y permitimos redirecciones
+        response = requests.get(pdf_url, timeout=30, allow_redirects=True)
         response.raise_for_status()
         
         with open('temp.pdf', 'wb') as f:
@@ -64,12 +92,11 @@ def process_pdf_text(pdf_url: str) -> str:
         return None
 
 async def generate_response(query: str, context: str) -> str:
-    """Genera respuesta usando OpenAI"""
     try:
         response = await openai.ChatCompletion.acreate(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": f"Responde basado en este contexto:\n{context}"},
+                {"role": "system", "content": f"Eres un experto en seguros. Contexto:\n{context}"},
                 {"role": "user", "content": query}
             ],
             temperature=0.3,
@@ -81,7 +108,6 @@ async def generate_response(query: str, context: str) -> str:
         return "❌ Error al generar respuesta. Intenta nuevamente."
 
 async def handle_message(update: Update, context):
-    """Maneja los mensajes del usuario"""
     user_query = update.message.text
     logger.info(f"Consulta recibida: {user_query}")
     
@@ -112,7 +138,6 @@ async def handle_message(update: Update, context):
         await update.message.reply_text("❌ Error al procesar tu consulta. Intenta nuevamente.")
 
 async def error_handler(update: Update, context):
-    """Manejador global de errores"""
     logger.error(f"Error no controlado: {context.error}")
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
@@ -120,20 +145,11 @@ async def error_handler(update: Update, context):
     )
 
 def main():
-    """Configuración principal del bot"""
     try:
-        application = Application.builder().token(TELEGRAM_TOKEN).build()
-        
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        application.add_error_handler(error_handler)
-        
-        logger.info("🚀 Bot iniciado correctamente")
-        application.run_polling(drop_pending_updates=True)
-
+        asyncio.run(start_bot_and_server())
     except Exception as e:
         logger.error(f"🚨 Error crítico: {str(e)}")
         raise
 
 if __name__ == '__main__':
-    main()  # Solo una llamada a main()
+    main()
