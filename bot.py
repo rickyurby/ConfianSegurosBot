@@ -9,6 +9,9 @@ from urllib.parse import urljoin
 from dotenv import load_dotenv
 from aiohttp import web
 import asyncio
+from requests.adapters import HTTPAdapter
+from requests.packages.urllib3.util.retry import Retry
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 # Configuración inicial
 load_dotenv()
@@ -29,6 +32,19 @@ openai.api_key = OPENAI_API_KEY
 
 # Cache para PDFs
 pdf_cache = {}
+
+# Configuración de retries para requests
+retry_strategy = Retry(
+    total=5,
+    backoff_factor=1,
+    status_forcelist=[429, 500, 502, 503, 504],
+    allowed_methods=["GET"]
+)
+
+adapter = HTTPAdapter(max_retries=retry_strategy)
+session = requests.Session()
+session.mount("https://", adapter)
+session.mount("http://", adapter)
 
 # Servidor web para health checks
 async def health_check(request):
@@ -63,7 +79,7 @@ async def main():
     try:
         await bot.updater.start_polling()
         while True:
-            await asyncio.sleep(3600)  # Mantener el loop activo
+            await asyncio.sleep(3600)
     except asyncio.CancelledError:
         await bot.updater.stop()
         await bot.stop()
@@ -87,18 +103,36 @@ def get_pdf_list():
 
 def process_pdf_text(pdf_url: str) -> str:
     try:
-        response = requests.get(pdf_url, timeout=30, allow_redirects=True)
+        logger.info(f"Intentando descargar: {pdf_url}")
+        
+        response = session.get(
+            pdf_url,
+            timeout=(10, 30),  # 10 segundos para conexión, 30 para lectura
+            headers={
+                'User-Agent': 'Mozilla/5.0 (compatible; ConfianSegurosBot/1.0; +https://confianseguros.com)',
+                'Accept-Encoding': 'gzip, deflate'
+            },
+            verify=False  # ⚠️ Solo para pruebas, eliminar en producción
+        )
+        
         response.raise_for_status()
         
+        # Verificar que sea un PDF válido
+        if 'pdf' not in response.headers.get('Content-Type', ''):
+            logger.error(f"El archivo {pdf_url} no es un PDF válido")
+            return None
+            
         with open('temp.pdf', 'wb') as f:
             f.write(response.content)
         
         reader = PdfReader('temp.pdf')
-        return "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
+        return "\n".join([page.extract_text() or '' for page in reader.pages])
+        
     except Exception as e:
-        logger.error(f"Error procesando PDF: {str(e)}")
+        logger.error(f"Error procesando PDF ({pdf_url}): {str(e)}")
         return None
 
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 async def generate_response(query: str, context: str) -> str:
     try:
         response = await openai.ChatCompletion.acreate(
@@ -108,12 +142,13 @@ async def generate_response(query: str, context: str) -> str:
                 {"role": "user", "content": query}
             ],
             temperature=0.3,
-            max_tokens=1500
+            max_tokens=1500,
+            request_timeout=30  # Timeout específico para OpenAI
         )
         return response.choices[0].message.content[:4000]
     except Exception as e:
-        logger.error(f"Error en OpenAI: {str(e)}")
-        return "⚠️ Error al procesar tu consulta. Intenta nuevamente."
+        logger.warning(f"Intento fallido en OpenAI: {str(e)}")
+        raise
 
 async def handle_message(update: Update, context):
     user_query = update.message.text
@@ -122,30 +157,35 @@ async def handle_message(update: Update, context):
     await update.message.reply_chat_action(action="typing")
     
     try:
-        context = []
-        for pdf in get_pdf_list():
-            pdf_url = urljoin(PDF_BASE_URL, pdf)
+        pdf_texts = []
+        for pdf_file in get_pdf_list():
+            pdf_url = urljoin(PDF_BASE_URL, pdf_file)
+            
             if pdf_url not in pdf_cache:
+                logger.info(f"Procesando PDF: {pdf_file}")
                 pdf_cache[pdf_url] = process_pdf_text(pdf_url)
+            
             if pdf_cache.get(pdf_url):
-                context.append(f"=== {pdf} ===\n{pdf_cache[pdf_url]}")
+                pdf_texts.append(f"=== {pdf_file} ===\n{pdf_cache[pdf_url]}")
         
-        if not context:
-            await update.message.reply_text("🔴 Error accediendo a documentos")
+        if not pdf_texts:
+            await update.message.reply_text("🔴 No se pudieron cargar los documentos. Por favor, inténtalo más tarde.")
             return
             
-        response = await generate_response(user_query, "\n\n".join(context))
+        response = await generate_response(user_query, "\n\n".join(pdf_texts))
         await update.message.reply_text(response)
         
     except Exception as e:
-        logger.error(f"Error: {str(e)}")
-        await update.message.reply_text("⚠️ Error procesando tu solicitud")
+        logger.error(f"Error en handle_message: {str(e)}")
+        await update.message.reply_text("⚠️ Lo siento, ocurrió un error procesando tu solicitud. Por favor, inténtalo de nuevo.")
 
 async def error_handler(update: Update, context):
-    logger.error(f"Error crítico: {context.error}")
+    error = context.error
+    logger.error(f"Error no controlado: {error}", exc_info=True)
+    
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
-        text="🔴 Error interno. Contacta al soporte técnico."
+        text="🔴 Ocurrió un error inesperado. Nuestro equipo técnico ha sido notificado."
     )
 
 if __name__ == '__main__':
@@ -154,4 +194,4 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         logger.info("Bot detenido manualmente")
     except Exception as e:
-        logger.error(f"Falla crítica: {str(e)}")
+        logger.critical(f"Falla crítica: {str(e)}", exc_info=True)
