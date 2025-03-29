@@ -109,11 +109,8 @@ def main():
         application.add_error_handler(error_handler)
         
         logger.info(f"Iniciando bot en puerto {args.port}")
-        application.run_polling(
-            listen="0.0.0.0",
-            port=args.port,
-            drop_pending_updates=True
-        )
+        application.run_polling(drop_pending_updates=True)
+        
     except Exception as e:
         logger.error(f"Error crítico: {str(e)}")
         raise
