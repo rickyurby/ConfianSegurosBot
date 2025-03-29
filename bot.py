@@ -1,7 +1,6 @@
 import os
 import logging
 import requests
-import tempfile
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from PyPDF2 import PdfReader
@@ -10,27 +9,23 @@ from langchain_core.prompts import ChatPromptTemplate
 from urllib.parse import urljoin
 from dotenv import load_dotenv
 
-# Cargar variables de entorno
+# Configuración inicial
 load_dotenv()
-
-# Configuración de logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Obtener credenciales de entorno
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-PDF_BASE_URL = os.getenv('PDF_BASE_URL')
+# Variables de entorno
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '7824585491:AAHy4M-fGSluRUdLFzFv2TbMA4_EzmhgmGE')
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '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')
+PDF_BASE_URL = os.getenv('PDF_BASE_URL', 'https://confianseguros.com/docs/')
 
-# Validación de credenciales
-if not TELEGRAM_TOKEN or not OPENAI_API_KEY or not PDF_BASE_URL:
-    logger.error("Faltan credenciales en .env")
-    exit(1)
+# Cache para PDFs
+pdf_cache = {}
 
-# Inicializar OpenAI
+# Configuración de LangChain
 llm = ChatOpenAI(
     model="gpt-3.5-turbo",
     temperature=0.3,
@@ -38,107 +33,96 @@ llm = ChatOpenAI(
 )
 
 async def start(update: Update, context):
-    """Mensaje de bienvenida"""
     welcome_msg = (
         "👋 ¡Hola! Soy ConfianSegurosBot.\n\n"
-        "Puedo responder preguntas sobre pólizas de seguros basándome en documentos oficiales.\n"
-        "Pregúntame lo que necesites."
+        "Puedo responderte preguntas sobre las condiciones generales de contratos de seguros.\n\n"
+        "Ejemplos de preguntas:\n"
+        "- ¿Qué cubre el seguro de auto en caso de accidente?\n"
+        "- ¿Cuál es el período de espera del seguro de salud?\n"
+        "- ¿Qué exclusiones tiene el seguro de hogar?\n\n"
+        "¡Pregúntame lo que necesites saber!"
     )
     await update.message.reply_text(welcome_msg)
 
-def obtener_lista_pdfs():
-    """Devuelve una lista de archivos PDF disponibles."""
-    try:
-        response = requests.get(urljoin(PDF_BASE_URL, 'listado.txt'), timeout=120)
-        response.raise_for_status()
-        return response.text.strip().split('\n')
-    except Exception as e:
-        logger.error(f"Error obteniendo lista de PDFs: {e}")
-        return []
+def get_pdf_list():
+    return [
+        "CG-AX-CAM-IND-D22.pdf",
+        "CG-AX-GMM-IND-F24.pdf",
+        "CG-AXA-AUT-IND-AG24.pdf",
+    ]
 
-def procesar_pdf(pdf_url):
-    """Descarga y extrae texto de un PDF utilizando un timeout de 120 segundos."""
+def process_pdf_text(pdf_url):
     try:
-        response = requests.get(pdf_url, timeout=120)
+        response = requests.get(pdf_url, timeout=15)
         response.raise_for_status()
         
-        # Uso de un archivo temporal para manejar el PDF
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-            tmp_file.write(response.content)
-            temp_path = tmp_file.name
+        with open('temp.pdf', 'wb') as f:
+            f.write(response.content)
         
-        reader = PdfReader(temp_path)
-        # Extraer texto de cada página, omitiendo aquellas que no contengan texto
+        reader = PdfReader('temp.pdf')
         text = "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
-        
-        # Eliminar el archivo temporal
-        os.remove(temp_path)
         return text
     except Exception as e:
         logger.error(f"Error procesando PDF {pdf_url}: {str(e)}")
-        return ""
+        return None
 
-async def generar_respuesta(pregunta, contexto):
-    """Genera una respuesta con LangChain."""
+async def generate_response(query, context):
     try:
         prompt = ChatPromptTemplate.from_template(
-            "Eres un asistente experto en seguros. Basado en el siguiente contexto:\n{context}\n\n"
+            "Eres un experto en seguros. Contexto:\n{context}\n\n"
             "Pregunta: {query}\n\n"
-            "Responde en español de manera clara y precisa. Si no tienes información relevante, dilo claramente."
+            "Responde en español de forma clara y profesional. "
+            "Si la información no está en el contexto, dilo claramente."
         )
         
         chain = prompt | llm
-        response = await chain.ainvoke({"context": contexto, "query": pregunta})
-        return response.content
+        response = await chain.ainvoke({"context": context, "query": query})
+        return response.content[:4096]  # Límite de Telegram
     except Exception as e:
-        logger.error(f"Error generando respuesta: {str(e)}")
-        return "❌ No pude generar una respuesta. Intenta nuevamente."
+        logger.error(f"Error en generate_response: {str(e)}")
+        return "❌ Error al generar respuesta. Por favor, intenta nuevamente."
 
 async def handle_message(update: Update, context):
-    """Procesa mensajes de los usuarios."""
-    pregunta = update.message.text
-    user = update.message.from_user
-    logger.info(f"Consulta de {user.first_name}: {pregunta}")
+    user_query = update.message.text
+    logger.info(f"Consulta recibida: {user_query}")
     
     await update.message.reply_chat_action(action="typing")
     
-    pdfs = obtener_lista_pdfs()
-    if not pdfs:
-        await update.message.reply_text("⚠️ No hay documentos disponibles en este momento.")
-        return
-    
-    textos_pdfs = []
-    for pdf in pdfs:
-        pdf_url = urljoin(PDF_BASE_URL, pdf)
-        texto = procesar_pdf(pdf_url)
-        if texto:
-            textos_pdfs.append(f"=== {pdf} ===\n{texto}")
-    
-    if not textos_pdfs:
-        await update.message.reply_text("⚠️ No pude extraer información de los documentos.")
-        return
-    
-    respuesta = await generar_respuesta(pregunta, "\n\n".join(textos_pdfs))
-    # Telegram tiene un límite de 4096 caracteres por mensaje
-    await update.message.reply_text(respuesta[:4000])
+    try:
+        pdf_texts = []
+        for pdf_file in get_pdf_list():
+            pdf_url = urljoin(PDF_BASE_URL, pdf_file)
+            
+            if pdf_url not in pdf_cache:
+                text = process_pdf_text(pdf_url)
+                if text:
+                    pdf_cache[pdf_url] = text
+            
+            if pdf_url in pdf_cache:
+                pdf_texts.append(f"=== {pdf_file} ===\n{pdf_cache[pdf_url]}")
+        
+        if not pdf_texts:
+            await update.message.reply_text("⚠️ No pude acceder a los documentos. Intenta más tarde.")
+            return
+        
+        response = await generate_response(user_query, "\n\n".join(pdf_texts))
+        await update.message.reply_text(response)
+        
+    except Exception as e:
+        logger.error(f"Error en handle_message: {str(e)}")
+        await update.message.reply_text("❌ Error al procesar tu consulta. Intenta nuevamente.")
 
 def main():
-    """Inicia el bot."""
+    if not TELEGRAM_TOKEN:
+        logger.error("TELEGRAM_TOKEN no configurado")
+        exit(1)
+        
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     logger.info("Bot iniciado correctamente")
-
-    # Configuración del webhook
-    port = os.getenv('PORT', 10000)  # Asegúrate de que tu aplicación escuche el puerto correcto
-    webhook_url = f"https://{os.getenv('RENDER_URL')}/webhook"  # Cambia según el entorno de Render
-
-    # Configurar webhook
-    application.bot.set_webhook(webhook_url)
-
-    # Ejecutar el bot con webhook
-    application.run_webhook(listen="0.0.0.0", port=port, url_path='webhook', webhook_url=webhook_url)
+    application.run_polling()
 
 if __name__ == '__main__':
     main()
