@@ -1,6 +1,6 @@
 import os
 import logging
-import argparse
+import requests
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from PyPDF2 import PdfReader
@@ -37,7 +37,7 @@ async def start(update: Update, context):
     await update.message.reply_text(welcome_msg)
 
 def get_pdf_list():
-    """Lista de PDFs disponibles (actualiza con tus archivos)"""
+    """Lista de PDFs disponibles"""
     return [
         "CG-AX-CAM-IND-D22.pdf",
         "CG-AX-GMM-IND-F24.pdf",
@@ -58,6 +58,23 @@ def process_pdf_text(pdf_url: str) -> str:
     except Exception as e:
         logger.error(f"Error procesando PDF {pdf_url}: {str(e)}")
         return None
+
+async def generate_response(query: str, context: str) -> str:
+    """Genera respuesta usando OpenAI"""
+    try:
+        response = await openai.ChatCompletion.acreate(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": f"Responde basado en este contexto:\n{context}"},
+                {"role": "user", "content": query}
+            ],
+            temperature=0.3,
+            max_tokens=1500
+        )
+        return response.choices[0].message.content[:4000]  # Limite de Telegram
+    except Exception as e:
+        logger.error(f"Error en OpenAI: {str(e)}")
+        return "❌ Error al generar respuesta. Intenta nuevamente."
 
 async def handle_message(update: Update, context):
     """Maneja los mensajes del usuario"""
@@ -86,18 +103,22 @@ async def handle_message(update: Update, context):
         
         # 2. Generar y enviar respuesta
         response = await generate_response(user_query, "\n\n".join(pdf_texts))
-        await update.message.reply_text(response[:4000])  # Limite de Telegram
+        await update.message.reply_text(response)
         
     except Exception as e:
         logger.error(f"Error en handle_message: {str(e)}")
         await update.message.reply_text("❌ Error al procesar tu consulta. Intenta nuevamente.")
 
+async def error_handler(update: Update, context):
+    """Manejador global de errores"""
+    logger.error(f"Error no controlado: {context.error}")
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text="❌ Ocurrió un error inesperado. Por favor, inténtalo más tarde."
+    )
+
 def main():
     """Configuración principal del bot"""
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--port", type=int, default=10000)
-    args = parser.parse_args()
-    
     try:
         application = Application.builder().token(TELEGRAM_TOKEN).build()
         
@@ -108,20 +129,12 @@ def main():
         # Manejo de errores
         application.add_error_handler(error_handler)
         
-        logger.info(f"Iniciando bot en puerto {args.port}")
+        logger.info("🚀 Bot iniciado correctamente")
         application.run_polling(drop_pending_updates=True)
-        
-    except Exception as e:
-        logger.error(f"Error crítico: {str(e)}")
-        raise
 
-async def error_handler(update: Update, context):
-    """Manejador global de errores"""
-    logger.error(f"Error no controlado: {context.error}")
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text="❌ Ocurrió un error inesperado. Por favor, inténtalo más tarde."
-    )
+    except Exception as e:
+        logger.error(f"🚨 Error crítico: {str(e)}")
+        raise
 
 if __name__ == '__main__':
     main()
