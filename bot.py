@@ -1,6 +1,7 @@
 import os
 import logging
 import requests
+import openai  # Importación faltante
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from PyPDF2 import PdfReader
@@ -19,6 +20,9 @@ logger = logging.getLogger(__name__)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 PDF_BASE_URL = os.getenv("PDF_BASE_URL")
+
+# Configurar OpenAI
+openai.api_key = OPENAI_API_KEY
 
 # Cache para PDFs
 pdf_cache = {}
@@ -71,7 +75,7 @@ async def generate_response(query: str, context: str) -> str:
             temperature=0.3,
             max_tokens=1500
         )
-        return response.choices[0].message.content[:4000]  # Limite de Telegram
+        return response.choices[0].message.content[:4000]
     except Exception as e:
         logger.error(f"Error en OpenAI: {str(e)}")
         return "❌ Error al generar respuesta. Intenta nuevamente."
@@ -84,7 +88,6 @@ async def handle_message(update: Update, context):
     await update.message.reply_chat_action(action="typing")
     
     try:
-        # 1. Obtener texto de los PDFs
         pdf_texts = []
         for pdf_file in get_pdf_list():
             pdf_url = urljoin(PDF_BASE_URL, pdf_file)
@@ -101,7 +104,6 @@ async def handle_message(update: Update, context):
             await update.message.reply_text("⚠️ No pude acceder a los documentos. Intenta más tarde.")
             return
         
-        # 2. Generar y enviar respuesta
         response = await generate_response(user_query, "\n\n".join(pdf_texts))
         await update.message.reply_text(response)
         
@@ -118,11 +120,13 @@ async def error_handler(update: Update, context):
     )
 
 def main():
+    """Configuración principal del bot"""
     try:
         application = Application.builder().token(TELEGRAM_TOKEN).build()
         
         application.add_handler(CommandHandler("start", start))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        application.add_error_handler(error_handler)
         
         logger.info("🚀 Bot iniciado correctamente")
         application.run_polling(drop_pending_updates=True)
@@ -130,4 +134,6 @@ def main():
     except Exception as e:
         logger.error(f"🚨 Error crítico: {str(e)}")
         raise
-    main()
+
+if __name__ == '__main__':
+    main()  # Solo una llamada a main()
