@@ -27,11 +27,10 @@ PDF_BASE_URL = os.getenv('PDF_BASE_URL', 'https://confianseguros.com/docs/')
 # Cache para PDFs
 pdf_cache = {}
 
-# Configuración de LangChain
-llm = ChatOpenAI(
-    model="gpt-3.5-turbo",
+llm = OpenAI(
+    model_name="gpt-3.5-turbo",
     temperature=0.3,
-    api_key=OPENAI_API_KEY
+    openai_api_key=OPENAI_API_KEY
 )
 
 async def start(update: Update, context):
