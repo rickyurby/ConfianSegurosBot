@@ -8,6 +8,8 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from urllib.parse import urljoin
 from dotenv import load_dotenv
+from langchain.llms import OpenAI  # Cambiado de langchain_openai
+from langchain.prompts import PromptTemplate  # Cambiado de langchain_core
 
 # Configuración inicial
 load_dotenv()
