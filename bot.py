@@ -118,16 +118,11 @@ async def error_handler(update: Update, context):
     )
 
 def main():
-    """Configuración principal del bot"""
     try:
         application = Application.builder().token(TELEGRAM_TOKEN).build()
         
-        # Manejadores
         application.add_handler(CommandHandler("start", start))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        
-        # Manejo de errores
-        application.add_error_handler(error_handler)
         
         logger.info("🚀 Bot iniciado correctamente")
         application.run_polling(drop_pending_updates=True)
@@ -135,6 +130,4 @@ def main():
     except Exception as e:
         logger.error(f"🚨 Error crítico: {str(e)}")
         raise
-
-if __name__ == '__main__':
     main()
