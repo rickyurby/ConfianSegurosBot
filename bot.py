@@ -1,37 +1,130 @@
 import os
 import logging
-import requests
+import argparse
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from PyPDF2 import PdfReader
 from urllib.parse import urljoin
 from dotenv import load_dotenv
 
-# 1. Cargar variables primero
+# Configuración inicial
 load_dotenv()
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-PDF_BASE_URL = os.getenv("PDF_BASE_URL")
-
-# 2. Configurar logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# 3. Crear la aplicación después de cargar variables
-application = Application.builder().token(TELEGRAM_TOKEN).build()
+# Variables de entorno
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+PDF_BASE_URL = os.getenv("PDF_BASE_URL")
 
-# Resto del código (manejadores, funciones, etc.)
+# Cache para PDFs
+pdf_cache = {}
+
 async def start(update: Update, context):
-    await update.message.reply_text("¡Bot funcionando correctamente! ✅")
+    """Manejador del comando /start"""
+    welcome_msg = (
+        "👋 ¡Hola! Soy ConfianSegurosBot.\n\n"
+        "Puedo responderte preguntas sobre las condiciones generales de contratos de seguros.\n\n"
+        "Ejemplos de preguntas:\n"
+        "- ¿Qué cubre el seguro de auto en caso de accidente?\n"
+        "- ¿Cuál es el período de espera del seguro de salud?\n"
+        "- ¿Qué exclusiones tiene el seguro de hogar?\n\n"
+        "¡Pregúntame lo que necesites saber!"
+    )
+    await update.message.reply_text(welcome_msg)
 
-# ... (tus demás funciones aquí)
+def get_pdf_list():
+    """Lista de PDFs disponibles (actualiza con tus archivos)"""
+    return [
+        "CG-AX-CAM-IND-D22.pdf",
+        "CG-AX-GMM-IND-F24.pdf",
+        "CG-AXA-AUT-IND-AG24.pdf",
+    ]
+
+def process_pdf_text(pdf_url: str) -> str:
+    """Descarga y extrae texto de un PDF"""
+    try:
+        response = requests.get(pdf_url, timeout=15)
+        response.raise_for_status()
+        
+        with open('temp.pdf', 'wb') as f:
+            f.write(response.content)
+        
+        reader = PdfReader('temp.pdf')
+        return "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
+    except Exception as e:
+        logger.error(f"Error procesando PDF {pdf_url}: {str(e)}")
+        return None
+
+async def handle_message(update: Update, context):
+    """Maneja los mensajes del usuario"""
+    user_query = update.message.text
+    logger.info(f"Consulta recibida: {user_query}")
+    
+    await update.message.reply_chat_action(action="typing")
+    
+    try:
+        # 1. Obtener texto de los PDFs
+        pdf_texts = []
+        for pdf_file in get_pdf_list():
+            pdf_url = urljoin(PDF_BASE_URL, pdf_file)
+            
+            if pdf_url not in pdf_cache:
+                text = process_pdf_text(pdf_url)
+                if text:
+                    pdf_cache[pdf_url] = text
+            
+            if pdf_url in pdf_cache and pdf_cache[pdf_url]:
+                pdf_texts.append(f"=== {pdf_file} ===\n{pdf_cache[pdf_url]}")
+        
+        if not pdf_texts:
+            await update.message.reply_text("⚠️ No pude acceder a los documentos. Intenta más tarde.")
+            return
+        
+        # 2. Generar y enviar respuesta
+        response = await generate_response(user_query, "\n\n".join(pdf_texts))
+        await update.message.reply_text(response[:4000])  # Limite de Telegram
+        
+    except Exception as e:
+        logger.error(f"Error en handle_message: {str(e)}")
+        await update.message.reply_text("❌ Error al procesar tu consulta. Intenta nuevamente.")
 
 def main():
-    application.add_handler(CommandHandler("start", start))
-    application.run_polling()
+    """Configuración principal del bot"""
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=10000)
+    args = parser.parse_args()
+    
+    try:
+        application = Application.builder().token(TELEGRAM_TOKEN).build()
+        
+        # Manejadores
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        
+        # Manejo de errores
+        application.add_error_handler(error_handler)
+        
+        logger.info(f"Iniciando bot en puerto {args.port}")
+        application.run_polling(
+            listen="0.0.0.0",
+            port=args.port,
+            drop_pending_updates=True
+        )
+    except Exception as e:
+        logger.error(f"Error crítico: {str(e)}")
+        raise
+
+async def error_handler(update: Update, context):
+    """Manejador global de errores"""
+    logger.error(f"Error no controlado: {context.error}")
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text="❌ Ocurrió un error inesperado. Por favor, inténtalo más tarde."
+    )
 
 if __name__ == '__main__':
     main()
