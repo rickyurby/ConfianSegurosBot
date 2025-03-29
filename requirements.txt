@@ -1,9 +1,7 @@
 python-telegram-bot==20.3
 openai==1.12.0
-langchain
-langchain-openai==0.0.7
+langchain-openai==0.0.5
 PyPDF2==3.0.1
 requests==2.31.0
-python-dotenv==1.0.1
-backoff
-python-telegram-bot[webhooks]
+python-dotenv==1.0.0
+langchain-core==0.1.0
