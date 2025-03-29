@@ -7,6 +7,11 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from PyPDF2 import PdfReader
 from urllib.parse import urljoin
 from dotenv import load_dotenv
+from telegram.ext import Defaults
+
+# Añade esto antes de main()
+defaults = Defaults(block=False)
+application = Application.builder().token(TELEGRAM_TOKEN).defaults(defaults).build()
 
 load_dotenv()
 logging.basicConfig(
@@ -104,6 +109,17 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.run_polling()
+
+from telegram.error import Conflict
+
+async def error_handler(update: Update, context):
+    if isinstance(context.error, Conflict):
+        logger.error("Error de conflicto: Deteniendo la aplicación")
+        await application.stop()
+    else:
+        logger.error(f"Error no manejado: {context.error}")
+
+application.add_error_handler(error_handler)
 
 if __name__ == '__main__':
     main()
